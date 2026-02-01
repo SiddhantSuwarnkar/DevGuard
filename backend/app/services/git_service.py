@@ -1,56 +1,64 @@
 import os
-from github import Github, GithubException
+import shutil
+import git  # Requires: pip install gitpython
 
 class GitService:
-    def __init__(self):
-        self.token = os.getenv("GITHUB_TOKEN")
-        # Initialize GitHub client (Auth or Public)
-        self.client = Github(self.token) if self.token else Github()
-        
-        # Filter settings
-        self.IGNORED_DIRS = {'node_modules', 'venv', 'env', '.git', '__pycache__', 'dist', 'build', '.vscode', '.idea'}
-        self.ACCEPTED_EXTS = {'.py', '.js', '.jsx', '.ts', '.tsx', '.json', '.html', '.css', '.dockerfile', 'Dockerfile'}
+    @staticmethod
+    def clone_repo(repo_url: str, target_dir: str):
+        """
+        Clones a remote git repository to a local directory.
+        Used by main.py to setup the environment for GraphEngine.
+        """
+        # 1. Clean up existing directory if it exists
+        if os.path.exists(target_dir):
+            try:
+                # Helper to handle Windows read-only files (like .git objects)
+                def on_rm_error(func, path, exc_info):
+                    os.chmod(path, 0o777)
+                    func(path)
+                    
+                shutil.rmtree(target_dir, onerror=on_rm_error)
+            except Exception as e:
+                print(f"⚠️ Warning: Could not clean {target_dir}: {e}")
 
-    def get_repo_files(self, repo_url):
-        """
-        Fetches all relevant code files from a repo URL.
-        Returns: Dict { 'path/to/file.py': 'content' }
-        """
+        # 2. Create directory
+        os.makedirs(target_dir, exist_ok=True)
+
+        # 3. Clone
+        print(f"⬇️ Cloning {repo_url} into {target_dir}...")
         try:
-            # Parse URL to get "user/repo"
-            clean_url = repo_url.strip().rstrip("/")
-            if clean_url.endswith(".git"): clean_url = clean_url[:-4]
-            repo_name = "/".join(clean_url.split("/")[-2:])
-            
-            repo = self.client.get_repo(repo_name)
-            contents = repo.get_contents("")
-            file_data = {}
-            
-            while contents:
-                file_content = contents.pop(0)
-                
-                if file_content.type == "dir":
-                    if file_content.name not in self.IGNORED_DIRS:
-                        try:
-                            contents.extend(repo.get_contents(file_content.path))
-                        except: pass # Skip if access denied
-                else:
-                    # Check extension
-                    _, ext = os.path.splitext(file_content.name)
-                    # Special case for Dockerfile which has no extension usually
-                    if ext in self.ACCEPTED_EXTS or file_content.name == 'Dockerfile':
-                        try:
-                            # Decode and store
-                            file_data[file_content.path] = file_content.decoded_content.decode('utf-8')
-                        except:
-                            pass # Skip binary files
-
-            if not file_data:
-                return {"error": "Repo found, but no supported code files detected."}
-            
-            return file_data
-
-        except GithubException as e:
-            return {"error": f"GitHub API Error: {e.data.get('message')}"}
+            git.Repo.clone_from(repo_url, target_dir)
+            print("✅ Clone successful.")
         except Exception as e:
-            return {"error": f"Unexpected Error: {str(e)}"}
+            # Cleanup on fail
+            if os.path.exists(target_dir):
+                shutil.rmtree(target_dir, ignore_errors=True)
+            raise Exception(f"Failed to clone repo: {str(e)}")
+
+    @staticmethod
+    def get_repo_files(target_dir: str):
+        """
+        Walks the local directory to return a dictionary of {filepath: content}.
+        This replaces the old API-based method.
+        """
+        file_map = {}
+        ignored_dirs = {'.git', 'node_modules', 'venv', 'env', '__pycache__', 'dist', 'build'}
+        accepted_exts = {'.py', '.js', '.jsx', '.ts', '.tsx', '.json', '.html', '.css', 'Dockerfile', '.dockerfile'}
+
+        for root, dirs, files in os.walk(target_dir):
+            # Modify dirs in-place to skip ignored directories
+            dirs[:] = [d for d in dirs if d not in ignored_dirs]
+            
+            for file in files:
+                _, ext = os.path.splitext(file)
+                if ext in accepted_exts or file == 'Dockerfile':
+                    full_path = os.path.join(root, file)
+                    try:
+                        with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            # Store relative path as key (e.g., "src/main.py")
+                            rel_path = os.path.relpath(full_path, target_dir)
+                            file_map[rel_path] = f.read()
+                    except Exception:
+                        pass # Skip binary or unreadable files
+        
+        return file_map

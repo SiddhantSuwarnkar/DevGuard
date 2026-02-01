@@ -1,66 +1,117 @@
 import networkx as nx
-import json
 from ..services.llm_service import LLMService
 
 class BlastRadiusSimulator:
-    def __init__(self, graph, model):
-        self.G = graph
-        self.llm = model
+    def __init__(self, graph_engine):
+        self.G = graph_engine.G
+        self.file_map = graph_engine.file_map
+        self.llm = LLMService()
 
-    def identify_surface_area(self, target_file):
+    def simulate_change(self, target_file, intent="Refactoring"):
         """
-        Identifies the 'Impact Surface' (Direct Dependencies).
-        Returns a list of files that directly import or call the target file.
+        Step 4: The Simulation.
+        Orchestrates the Graph Traversal + AI Impact Analysis.
+        """
+        # 1. Identify the Blast Radius (Surface Area)
+        # Who imports or calls the target file?
+        dependents = self._identify_surface_area(target_file)
+        
+        # 2. Extract Context for AI
+        # We need to show the AI the code that *might* break.
+        context = self._build_context(target_file, dependents)
+        
+        # 3. AI Risk Assessment
+        if not dependents:
+            return {
+                "impacted_files": [],
+                "risk_assessment": {
+                    "risk_level": "Low",
+                    "confidence": "100%",
+                    "potential_breaks": ["No direct dependencies found. Safe to modify."],
+                    "mitigation_steps": []
+                }
+            }
+
+        risk_report = self._assess_risk_with_ai(target_file, intent, context, len(dependents))
+        
+        # Merge results
+        return {
+            "impacted_files": dependents,
+            "risk_assessment": risk_report
+        }
+
+    def _identify_surface_area(self, target_file):
+        """
+        Graph Theory: Find all 'Predecessors' (Reverse Dependencies).
         """
         impacted = set()
-        # Find all nodes belonging to this file (functions, classes, or the file itself)
-        file_nodes = [n for n in self.G.nodes if str(n).startswith(f"{target_file}")]
-        if target_file in self.G: file_nodes.append(target_file)
-
-        for node in file_nodes:
+        
+        # Helper: Find graph nodes that belong to this file
+        # (e.g., 'utils.py', 'utils.py::calculate_tax')
+        target_nodes = [n for n in self.G.nodes if str(n).startswith(target_file)]
+        
+        for node in target_nodes:
+            # Who calls this node?
             if node in self.G:
-                # Find predecessors (who calls me?)
-                for p in self.G.predecessors(node):
-                    p_file = p.split("::")[0] if "::" in str(p) else str(p)
-                    # Don't list the file itself as an external dependency
-                    if p_file != target_file:
-                        impacted.add(p_file)
+                callers = self.G.predecessors(node)
+                for caller in callers:
+                    # Extract filename from node ID (e.g. 'views.py::get_user' -> 'views.py')
+                    caller_file = caller.split("::")[0]
+                    
+                    # Ignore self-references
+                    if caller_file != target_file:
+                        impacted.add(caller_file)
+                        
         return list(impacted)
 
-    def assess_risk(self, target_file, intent, dependents, file_contents):
+    def _build_context(self, target_file, dependents):
         """
-        Evaluates the risk of breaking contracts (interfaces, APIs, props).
-        Does NOT predict runtime behavior.
+        Optimized Context Builder.
+        Pulls the Target File code + Snippets of Dependent Files.
         """
-        if not dependents: return None
+        # 1. Get Target Code (Limit size)
+        target_code = self.file_map.get(target_file, "")[:1000]
+        
+        # 2. Get Dependent Code (Limit to top 3 to save tokens)
+        dep_context = ""
+        for dep in dependents[:3]:
+            content = self.file_map.get(dep, "")[:800] # First 800 chars usually contain imports/usage
+            dep_context += f"\n--- DEPENDENT FILE: {dep} ---\n{content}\n"
+            
+        return f"""
+        [TARGET FILE CODE]:
+        {target_code}
+        
+        [DEPENDENT FILES SAMPLE]:
+        {dep_context}
+        """
 
-        # Build context from dependent files (limited to save tokens)
-        context = ""
-        for dep in dependents[:3]: 
-            content = file_contents.get(dep, '')[:1500]
-            context += f"\n--- DEPENDENT: {dep} ---\n{content}\n"
-
+    def _assess_risk_with_ai(self, target_file, intent, context, dep_count):
         prompt = f"""
-        Act as a Technical Lead reviewing a proposed code change.
+        Act as a QA Automation Architect. Perform a Regression Risk Analysis.
         
-        TARGET FILE: '{target_file}'
-        CHANGE INTENT: "{intent}"
+        SCENARIO:
+        Developer wants to modify: '{target_file}'
+        Change Intent: "{intent}"
+        Total Dependent Files: {dep_count}
         
-        DEPENDENT FILES (Callers/Importers):
+        CODE CONTEXT (Target + Dependents):
         {context}
         
         TASK:
-        Assess the risk of breaking Data Contracts (Function signatures, API schemas, Prop types).
-        Do NOT predict functionality or runtime logic. Focus strictly on Interface Compatibility.
+        Predict what will break in the DEPENDENT files based on the INTENT.
+        1. If Intent is "Rename X to Y", look for usages of X in dependents.
+        2. If Intent is "Change return type", look for logic expecting the old type.
         
-        Output JSON:
+        OUTPUT JSON:
         {{
-            "risk_level": "High/Medium/Low",
+            "risk_level": "High" | "Medium" | "Low",
+            "confidence": "High" | "Medium",
             "potential_breaks": [
-                "Specific risk (e.g., 'Renaming user_id breaks UserProfile.tsx which expects 'user_id'')"
+                "Technical description of break (e.g. 'auth.py calls login() which is being renamed')"
             ],
             "mitigation_steps": [
-                "Specific fix (e.g., 'Update UserProfile.tsx interface to match new schema')"
+                "Actionable fix (e.g. 'Update imports in auth.py')"
             ]
         }}
         """

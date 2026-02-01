@@ -1,0 +1,6 @@
+# Ignore the analysis scratchpad
+backend/temp_repo/
+
+# Ignore environment variables (security)
+.env
+backend/.env
