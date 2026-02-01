@@ -238,6 +238,6 @@ AIBoomi Startup Weekend 2026
 
 ⸻
 
-📄 License
+License
 
 MIT License
