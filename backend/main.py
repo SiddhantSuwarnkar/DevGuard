@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import os
 import shutil
 
-# --- FIXED IMPORTS (MATCHING YOUR "app" FOLDER STRUCTURE) ---
+# --- IMPORTS ---
 from app.services.git_service import GitService
 from app.core.graph_engine import GraphEngine       # Feature 1
 from app.core.advisor import IntentAdvisor          # Feature 2
@@ -43,21 +43,24 @@ class ImpactRequest(BaseModel):
 
 @app.get("/")
 def health_check():
-    return {"status": "active", "version": "2.1 (Nested Structure)"}
+    return {"status": "active", "version": "2.1 (Five-Brain Architecture)"}
 
 # 1. ANALYZE (Step 1)
 @app.post("/api/analyze")
 async def analyze_repo(request: AnalyzeRequest):
     global graph_engine
     
+    # 1. Clean previous run
     if os.path.exists(CURRENT_REPO_PATH): 
         try:
             shutil.rmtree(CURRENT_REPO_PATH)
         except PermissionError:
             pass 
     
+    # 2. Clone the repo to local disk
     GitService.clone_repo(request.repo_url, CURRENT_REPO_PATH)
     
+    # 3. Init GraphEngine (It reads files from disk now)
     graph_engine = GraphEngine(CURRENT_REPO_PATH)
     G = graph_engine.build_graph() 
     
@@ -87,7 +90,6 @@ async def check_integrity():
 async def calculate_impact(request: ImpactRequest):
     if not graph_engine: raise HTTPException(400, "Analyze repo first")
     simulator = BlastRadiusSimulator(graph_engine)
-    # UPDATED: Passing 'intent' so AI knows if it's a Rename vs Logic Change
     return simulator.simulate_change(request.target_file, request.intent)
 
 # 5. READINESS AUDIT (Step 5)
@@ -97,52 +99,9 @@ async def check_readiness():
     auditor = SystemAuditor(graph_engine)
     return auditor.run_audit()
 
-
-
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
-
-class GitHubIngestRequest(BaseModel):
-    repo: dict
-    files: list
-
-from fastapi import HTTPException
-
-@app.post("/api/ingest/github")
-async def ingest_from_github(payload: dict):
-    print("🔥 /api/ingest/github HIT")
-
-    files = payload.get("files", [])
-    if not files:
-        raise HTTPException(status_code=400, detail="No files received")
-
-    # Build file_data dict expected by GraphEngine
-    file_data = {
-        f["path"]: f.get("content", "")
-        for f in files
-        if "path" in f
-    }
-
-    print("Files received:", len(file_data))
-
-    global graph_engine
-    graph_engine = GraphEngine(repo_path="github_ingest")
-
-    G, tech_report = graph_engine.build_graph(file_data)
-
-    print("Graph built successfully")
-    print("Nodes:", len(G.nodes))
-    print("Edges:", len(G.edges))
-
-    return {
-        "status": "ingested",
-        "files_received": len(file_data),
-        "nodes": len(G.nodes),
-        "edges": len(G.edges),
-        "tech_stack": tech_report,
-    }
 
 if __name__ == "__main__":
     import uvicorn

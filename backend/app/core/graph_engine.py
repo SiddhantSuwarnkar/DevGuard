@@ -3,24 +3,34 @@ import os
 import json
 import ast
 from ..services.llm_service import LLMService
+from ..services.git_service import GitService  # <--- Import GitService
 
 class GraphEngine:
-    def __init__(self, repo_path: str):
+    def __init__(self, repo_path):
         self.repo_path = repo_path
-        self.G = nx.DiGraph()   # ← THIS MUST EXIST
+        # Load files immediately using the service
+        self.file_map = GitService.get_repo_files(repo_path)
+        
+        self.G = nx.DiGraph()
         self.llm = LLMService()
-        self.api_knowledge_base = {}
+        self.api_knowledge_base = {} 
         self.tech_report = {}
+        # Maps ClassName -> NodeID (e.g. "User" -> "backend/models.py::User")
         self.class_index = {} 
 
-    def build_graph(self, file_data):
-        print("  GraphEngine: Starting Hybrid Analysis (AST + LLM)...")
+    def build_graph(self):
+        """
+        Builds the graph using the loaded self.file_map.
+        No arguments needed anymore.
+        """
+        print("🏗️  GraphEngine: Starting Hybrid Analysis (AST + LLM)...")
+        
+        file_data = self.file_map
         
         # 1. Tech Stack Detection
         self._detect_tech_stack(list(file_data.keys()))
         
         # 2. HARD PARSING (AST) - Index Nodes & Definitions
-        # We replace external CodeParser with internal AST to get 'info' (docstrings) and 'models'
         relevant_files = [] 
         for f, code in file_data.items():
             if self._is_ignored(f): continue
@@ -39,12 +49,11 @@ class GraphEngine:
                 print(f"⚠️  Parser Error in {f}: {e}")
 
         # 3. HARD LINKING (AST) - Connect Usages to Definitions
-        # This fixes "linkages between models and actual code"
         for f in relevant_files:
             if f.endswith('.py'):
                 self._link_python_dependencies(f, file_data[f])
 
-        print(f"   GraphEngine: Mapped {len(relevant_files)} files & {len(self.G.nodes)} nodes.")
+        print(f"✅ GraphEngine: Mapped {len(relevant_files)} files & {len(self.G.nodes)} nodes.")
 
         # 4. SOFT LINKING (AI Layer) - Identify Implicit Edges (API calls, etc)
         backend_files = {k: v for k, v in file_data.items() if k in relevant_files and k.endswith('.py')}
@@ -56,7 +65,7 @@ class GraphEngine:
         if frontend_files:
             self._map_frontend_logic(frontend_files)
 
-        return self.G, self.tech_report
+        return self.G
 
     def _is_ignored(self, filename):
         ignore_patterns = ['test', 'spec', 'migration', 'config', 'venv', 'node_modules', 'build', 'dist', 'json', 'md', '.git']
@@ -128,7 +137,7 @@ class GraphEngine:
         if data: self.tech_report = data
 
     def _map_backend_logic(self, files):
-        print(f"   GraphEngine: AI analyzing {len(files)} Backend files for connections...")
+        print(f"🤖 GraphEngine: AI analyzing {len(files)} Backend files for connections...")
         
         combined_code = ""
         for name, content in files.items():
@@ -176,7 +185,7 @@ class GraphEngine:
                 self.G.add_edge(source, target, relation="calls")
 
     def _map_frontend_logic(self, files):
-        print(f"   GraphEngine: AI analyzing {len(files)} Frontend files for connections...")
+        print(f"🤖 GraphEngine: AI analyzing {len(files)} Frontend files for connections...")
         
         combined_code = ""
         for name, content in files.items():
